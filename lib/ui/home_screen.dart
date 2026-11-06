@@ -153,11 +153,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                   right: 8,
                                   child: IconButton.filled(
                                     style: IconButton.styleFrom(
-                                      backgroundColor:
-                                          Colors.black.withOpacity(0.5),
+                                      backgroundColor: Colors.amber,
+                                      foregroundColor: Colors.black,
+                                      side: const BorderSide(
+                                          color: Colors.white, width: 1.5),
+                                      padding: const EdgeInsets.all(10),
                                     ),
-                                    icon:
-                                        const Icon(Icons.ios_share, size: 18),
+                                    icon: const Icon(Icons.ios_share, size: 24),
                                     tooltip: 'Share',
                                     onPressed: () async {
                                       final files = state.generatedClipPaths
@@ -365,6 +367,23 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 12),
               _sectionLabel(
                   '2. Dialogue (${state.dialogueLines.length}/${ProjectState.maxDialogueLines})'),
+              const SizedBox(height: 4),
+              RichText(
+                text: TextSpan(
+                  style: const TextStyle(fontSize: 14, color: Colors.white),
+                  children: [
+                    TextSpan(
+                      text: '${state.spokenWordCount}/${state.wordBudget} words',
+                      style: const TextStyle(color: Colors.amber),
+                    ),
+                    TextSpan(
+                      text: state.isOverWordBudget
+                          ? " — trim it down so MiniMax doesn't rush the delivery"
+                          : ' — good pace for ${state.videoDurationSeconds}s',
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 6),
               for (int i = 0; i < state.dialogueLines.length; i++)
                 _DialogueRow(
@@ -408,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               const SizedBox(height: 8),
               Text(
-                '$creditsNeeded credit needed (you have ${state.credits}).',
+                '$creditsNeeded credits needed (you have ${state.credits}).',
                 style: TextStyle(
                   fontSize: 12,
                   color: state.credits >= creditsNeeded
@@ -454,6 +473,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              if (state.canCombineWithPrevious) ...[
+                const SizedBox(height: 10),
+                _CombineSection(),
+              ],
+
               if (state.generatedClipPaths.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 _ExportSection(scriptText: state.scriptPrompt),
@@ -489,7 +513,7 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (dialogContext) => AlertDialog(
           title: const Text('Not enough credits'),
           content: Text(
-            'This needs $creditsNeeded credit, but you have ${state.credits}.',
+            'This needs $creditsNeeded credits, but you have ${state.credits}.',
           ),
           actions: [
             TextButton(
@@ -545,8 +569,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Small self-contained elapsed-time ticker so the "Generating…" state
-/// shows a live clock instead of sitting silent for up to 5 minutes.
 class _GeneratingLabel extends StatefulWidget {
   const _GeneratingLabel();
 
@@ -664,6 +686,93 @@ class _DialogueRowState extends State<_DialogueRow> {
             constraints: const BoxConstraints(),
             onPressed: widget.locked ? null : widget.onRemove,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CombineSection extends StatelessWidget {
+  const _CombineSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<ProjectState>();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.amber.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Combine with your last video into one ~30s video?',
+            style: TextStyle(fontSize: 13, color: Colors.amber),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Crossfade blends straight into the next clip. Splash screen '
+            'inserts a short branded card between them first.',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: state.isCombining
+                      ? null
+                      : () =>
+                          state.combineWithPrevious(useSplashBridge: false),
+                  child: const Text('Crossfade',
+                      style: TextStyle(fontSize: 12)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton(
+                  onPressed: state.isCombining
+                      ? null
+                      : () =>
+                          state.combineWithPrevious(useSplashBridge: true),
+                  child: state.isCombining
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('With splash screen',
+                          style: TextStyle(fontSize: 12)),
+                ),
+              ),
+            ],
+          ),
+          if (state.combineError != null) ...[
+            const SizedBox(height: 8),
+            Text(state.combineError!,
+                style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
+          ],
+          if (state.combinedExportPath != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.check_circle,
+                    size: 14, color: Colors.greenAccent),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Combined: ${state.combinedExportPath}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
