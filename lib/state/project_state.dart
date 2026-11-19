@@ -53,6 +53,9 @@ class ProjectState extends ChangeNotifier {
 
   List<HistoryEntry> history = [];
 
+  /// Videos in Recently Deleted (restorable for 30 days).
+  List<TrashedEntry> trash = [];
+
   bool isCombining = false;
   String? combineError;
   String? combinedExportPath;
@@ -113,13 +116,35 @@ class ProjectState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Loads History and Recently Deleted, clearing out anything that has
+  /// been in the trash for 30+ days first.
   Future<void> loadHistory() async {
+    await historyService.purgeExpiredTrash();
     history = await historyService.loadHistory();
+    trash = await historyService.loadTrash();
     notifyListeners();
   }
 
-  Future<void> deleteHistoryEntry(HistoryEntry entry) async {
-    await historyService.deleteEntry(entry);
+  /// Moves a video to Recently Deleted. Returns the trashed item so the
+  /// UI can offer Undo.
+  Future<TrashedEntry> deleteHistoryEntry(HistoryEntry entry) async {
+    final item = await historyService.moveToTrash(entry);
+    await loadHistory();
+    return item;
+  }
+
+  Future<void> restoreFromTrash(TrashedEntry item) async {
+    await historyService.restoreFromTrash(item);
+    await loadHistory();
+  }
+
+  Future<void> deleteFromTrashForever(TrashedEntry item) async {
+    await historyService.deleteForever(item);
+    await loadHistory();
+  }
+
+  Future<void> emptyTrash() async {
+    await historyService.emptyTrash();
     await loadHistory();
   }
 
