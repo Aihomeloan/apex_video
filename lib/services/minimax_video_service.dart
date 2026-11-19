@@ -52,7 +52,10 @@ class MiniMaxVideoService {
 
     // ignore: avoid_print
     print('>>> MiniMax: submitting task — duration=$clampedDuration, '
-        'hasImage=${imageBytes != null}, promptChars=${prompt.length}');
+        'requestedRatio=9:16, hasImage=${imageBytes != null}, '
+        'promptChars=${prompt.length}');
+    // ignore: avoid_print
+    print('>>> MiniMax: FULL PROMPT SENT: "$prompt"');
 
     final res = await http.post(
       Uri.parse('$_baseUrl/video_generation'),
@@ -87,10 +90,6 @@ class MiniMaxVideoService {
     }
     final decoded = jsonDecode(res.body) as Map<String, dynamic>;
 
-    // This endpoint returns a LIST of recent tasks, not the single task
-    // matching taskId directly — confirmed live via curl tonight. Find
-    // our task inside "items" by id instead of trusting a top-level
-    // status field (which doesn't exist in this response shape at all).
     final items = decoded['items'] as List<dynamic>?;
     Map<String, dynamic>? match;
     if (items != null) {
@@ -111,9 +110,11 @@ class MiniMaxVideoService {
     }
 
     final status = (match['status'] as String?)?.toLowerCase() ?? '';
+    final actualRatio = match['ratio']?.toString() ?? 'unknown';
 
     // ignore: avoid_print
-    print('>>> MiniMax: poll status = "$status" (task $taskId)');
+    print('>>> MiniMax: poll status = "$status", actualRatio="$actualRatio" '
+        '(we requested 9:16) — task $taskId');
 
     if (status == 'succeeded' || status == 'success') {
       final content = match['content'] as Map<String, dynamic>?;
@@ -128,6 +129,8 @@ class MiniMaxVideoService {
               'Status succeeded but no content.url — check logged JSON.',
         );
       }
+      // ignore: avoid_print
+      print('>>> MiniMax: FINAL ITEM DETAILS: $match');
       return VideoGenerationTask(
           operationName: taskId, done: true, videoUri: url);
     }

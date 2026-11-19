@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/dialogue_line.dart';
 import '../models/history_entry.dart';
+import '../services/ffmpeg_service.dart';
 import '../services/gemini_image_service.dart';
 import '../services/gemini_text_service.dart';
 import '../services/history_service.dart';
@@ -18,11 +20,15 @@ class ProjectState extends ChangeNotifier {
   final HistoryService historyService = HistoryService();
 
   static const _creditsKey = 'apexvideo_credits';
-  static const _welcomeGrantedKey = 'apexvideo_welcome_credits_granted';
   static const _aiAssistEnabledKey = 'apexvideo_ai_assist_enabled';
-  static const _welcomeCreditsAmount = 10;
   static const maxDialogueLines = 4;
-  static const durationOptions = [5, 8, 10, 12, 15];
+
+  static const durationOptions = [10, 15];
+  static const Map<int, int> _creditsByDuration = {10: 4, 15: 6};
+
+  // Rough natural speaking pace guardrail — ~2.5 words/sec, leaving room
+  // for the scene itself to breathe rather than every second being talk.
+  static const Map<int, int> _wordBudgetByDuration = {10: 18, 15: 28};
 
   String scriptPrompt = '';
   File? sceneImage;
@@ -47,19 +53,43 @@ class ProjectState extends ChangeNotifier {
 
   List<HistoryEntry> history = [];
 
-  int get creditsNeeded => 1;
+  bool isCombining = false;
+  String? combineError;
+  String? combinedExportPath;
 
+  int get creditsNeeded =>
+      _creditsByDuration[videoDurationSeconds] ?? _creditsByDuration[10]!;
+
+  bool get canCombineWithPrevious =>
+      Platform.isMacOS &&
+      generatedClipPaths.isNotEmpty &&
+      history.length >= 2;
+
+  /// Word count across every dialogue line — the part MiniMax actually
+  /// has to speak. The scene description itself isn't spoken, so it's
+  /// not counted toward the pacing budget.
+  int get spokenWordCount {
+    var count = 0;
+    for (final d in dialogueLines) {
+      final trimmed = d.line.trim();
+      if (trimmed.isEmpty) continue;
+      count += trimmed.split(RegExp(r'\s+')).length;
+    }
+    return count;
+  }
+
+  int get wordBudget =>
+      _wordBudgetByDuration[videoDurationSeconds] ??
+      _wordBudgetByDuration[10]!;
+
+  bool get isOverWordBudget => spokenWordCount > wordBudget;
+
+  /// Loads saved credits. No free welcome credits — new installs start
+  /// at 0 and buy a credit pack to generate.
   Future<void> loadCredits() async {
     final prefs = await SharedPreferences.getInstance();
     credits = prefs.getInt(_creditsKey) ?? 0;
     aiAssistEnabled = prefs.getBool(_aiAssistEnabledKey) ?? true;
-
-    final alreadyGranted = prefs.getBool(_welcomeGrantedKey) ?? false;
-    if (!alreadyGranted) {
-      credits += _welcomeCreditsAmount;
-      await prefs.setBool(_welcomeGrantedKey, true);
-      await _saveCredits();
-    }
 
     notifyListeners();
 
@@ -98,21 +128,16 @@ class ProjectState extends ChangeNotifier {
     await prefs.setInt(_creditsKey, credits);
   }
 
-  Future<bool> _spendCredit() async {
-    if (credits <= 0) return false;
-    credits -= 1;
+  Future<bool> _spendCredits(int amount) async {
+    if (credits < amount) return false;
+    credits -= amount;
     await _saveCredits();
     notifyListeners();
     return true;
   }
 
-  /// Credits only represent OUR app's promise to you, not MiniMax's — so
-  /// if a generation fails or times out with nothing to show for it,
-  /// give the credit back. Whether MiniMax itself still bills for a
-  /// failed/incomplete task on their end is a separate question — check
-  /// your Balance page on platform.minimax.io to confirm that.
-  Future<void> _refundCredit() async {
-    credits += 1;
+  Future<void> _refundCredits(int amount) async {
+    credits += amount;
     await _saveCredits();
     notifyListeners();
   }
@@ -140,6 +165,7 @@ class ProjectState extends ChangeNotifier {
 
   void setVideoDuration(int seconds) {
     if (isGenerating) return;
+    if (!durationOptions.contains(seconds)) return;
     videoDurationSeconds = seconds;
     notifyListeners();
   }
@@ -199,8 +225,13 @@ class ProjectState extends ChangeNotifier {
     if (index < dialogueLines.length) dialogueLines[index].speaker = speaker;
   }
 
+  /// This one DOES notify — the word-budget warning depends on live
+  /// dialogue text, so the UI needs to rebuild as the user types.
   void updateDialogueLineText(int index, String line) {
-    if (index < dialogueLines.length) dialogueLines[index].line = line;
+    if (index < dialogueLines.length) {
+      dialogueLines[index].line = line;
+      notifyListeners();
+    }
   }
 
   String _buildCombinedPrompt() {
@@ -223,19 +254,23 @@ class ProjectState extends ChangeNotifier {
     generatedClipPaths = [];
     currentSegmentIndex = 0;
     totalSegments = 1;
+    combinedExportPath = null;
+    combineError = null;
     notifyListeners();
 
-    var creditSpent = false;
+    final cost = creditsNeeded;
+    var creditsSpent = 0;
 
     try {
-      final spent = await _spendCredit();
+      final spent = await _spendCredits(cost);
       if (!spent) {
-        errorMessage = 'Out of credits — buy more to keep generating.';
+        errorMessage =
+            'Out of credits — this needs $cost, you have $credits.';
         isGenerating = false;
         notifyListeners();
         return;
       }
-      creditSpent = true;
+      creditsSpent = cost;
       currentSegmentIndex = 1;
       notifyListeners();
 
@@ -248,7 +283,9 @@ class ProjectState extends ChangeNotifier {
 
       // ignore: avoid_print
       print('>>> ApexVideo: generating via MiniMax — '
-          '${videoDurationSeconds}s, hasImage=${imageBytes != null}');
+          '${videoDurationSeconds}s ($cost credits), '
+          'spokenWords=$spokenWordCount/$wordBudget, '
+          'hasImage=${imageBytes != null}');
 
       final taskId = await _minimax.generate(
         prompt: prompt,
@@ -262,8 +299,8 @@ class ProjectState extends ChangeNotifier {
 
       if (finished.videoUri == null) {
         errorMessage = finished.errorMessage ?? 'Generation failed.';
-        await _refundCredit();
-        creditSpent = false;
+        await _refundCredits(creditsSpent);
+        creditsSpent = 0;
       } else {
         final dir = await getTemporaryDirectory();
         final localPath =
@@ -280,13 +317,63 @@ class ProjectState extends ChangeNotifier {
       }
     } catch (e) {
       errorMessage = e.toString();
-      // A timeout or any thrown exception also means nothing was
-      // delivered — refund here too, not just on the "failed" path above.
-      if (creditSpent) {
-        await _refundCredit();
+      if (creditsSpent > 0) {
+        await _refundCredits(creditsSpent);
       }
     } finally {
       isGenerating = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> combineWithPrevious({required bool useSplashBridge}) async {
+    if (!canCombineWithPrevious) return;
+
+    combineError = null;
+    isCombining = true;
+    combinedExportPath = null;
+    notifyListeners();
+
+    try {
+      final latest = history[0];
+      final previous = history[1];
+
+      final clips = <String>[...previous.clipPaths, ...latest.clipPaths];
+
+      if (useSplashBridge) {
+        final byteData =
+            await rootBundle.load('assets/branding/apexvideo_splash.png');
+        final tempDir = await getTemporaryDirectory();
+        final splashImagePath =
+            '${tempDir.path}/splash_source_${DateTime.now().millisecondsSinceEpoch}.png';
+        await File(splashImagePath)
+            .writeAsBytes(byteData.buffer.asUint8List());
+
+        final splashClipPath =
+            '${tempDir.path}/splash_clip_${DateTime.now().millisecondsSinceEpoch}.mp4';
+        await FfmpegService.imageToVideoClip(
+          imagePath: splashImagePath,
+          outputPath: splashClipPath,
+          durationSeconds: 1.5,
+        );
+
+        clips.insertAll(previous.clipPaths.length, [splashClipPath]);
+      }
+
+      final dir = Directory.systemTemp;
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final outputPath = '${dir.path}/combined_$stamp.mp4';
+
+      await FfmpegService.concatClips(
+        clipPaths: clips,
+        outputPath: outputPath,
+      );
+
+      combinedExportPath = outputPath;
+    } catch (e) {
+      combineError = e.toString();
+    } finally {
+      isCombining = false;
       notifyListeners();
     }
   }
@@ -301,6 +388,8 @@ class ProjectState extends ChangeNotifier {
     totalSegments = 0;
     errorMessage = null;
     hasUsedAssist = false;
+    combinedExportPath = null;
+    combineError = null;
     notifyListeners();
   }
 

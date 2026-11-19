@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>ApexVideo saves your finished videos to your Photos library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ApexVideo needs access to your photo library to select images.</string>
 	<key>UIApplicationSceneManifest</key>
