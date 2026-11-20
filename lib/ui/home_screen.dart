@@ -717,7 +717,7 @@ class _DialogueRowState extends State<_DialogueRow> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 70,
+            width: 100,
             child: TextField(
               controller: _speakerController,
               enabled: !widget.locked,
