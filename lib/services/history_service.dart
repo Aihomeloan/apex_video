@@ -38,6 +38,55 @@ class HistoryService {
   static const _trashKey = 'apexvideo_trash';
 
   // ---------------------------------------------------------------------------
+  // Path repair
+  //
+  // iOS moves the app's storage folder whenever a new build is installed
+  // (every App Store update, too). The files come along, but any FULL path
+  // saved earlier points at the old folder. So when a saved path is gone,
+  // look for the same file name in today's History folder and use that.
+  // ---------------------------------------------------------------------------
+
+  Future<Directory> _historyDir() async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    return Directory('${docsDir.path}/history');
+  }
+
+  String _baseName(String path) {
+    final parts = path.split(RegExp(r'[\\/]'));
+    return parts.isEmpty ? path : parts.last;
+  }
+
+  /// Returns the entry with every clip path pointing at where the file
+  /// actually is now, and whether anything changed.
+  Future<(HistoryEntry, bool)> _repair(HistoryEntry e, Directory dir) async {
+    var changed = false;
+    final fixed = <String>[];
+    for (final p in e.clipPaths) {
+      if (await File(p).exists()) {
+        fixed.add(p);
+        continue;
+      }
+      final candidate = '${dir.path}/${_baseName(p)}';
+      if (await File(candidate).exists()) {
+        fixed.add(candidate);
+        changed = true;
+      } else {
+        fixed.add(p); // truly missing — leave as-is
+      }
+    }
+    if (!changed) return (e, false);
+    return (
+      HistoryEntry(
+        id: e.id,
+        clipPaths: fixed,
+        scriptPrompt: e.scriptPrompt,
+        createdAt: e.createdAt,
+      ),
+      true,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // History
   // ---------------------------------------------------------------------------
 
@@ -49,7 +98,19 @@ class HistoryService {
     final entries = list
         .map((e) => HistoryEntry.fromJson(e as Map<String, dynamic>))
         .toList();
+
+    final dir = await _historyDir();
+    var anyChanged = false;
+    for (var i = 0; i < entries.length; i++) {
+      final (fixed, changed) = await _repair(entries[i], dir);
+      if (changed) {
+        entries[i] = fixed;
+        anyChanged = true;
+      }
+    }
+
     entries.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    if (anyChanged) await _saveHistory(entries);
     return entries;
   }
 
@@ -63,8 +124,7 @@ class HistoryService {
     required List<String> tempClipPaths,
     required String scriptPrompt,
   }) async {
-    final docsDir = await getApplicationDocumentsDirectory();
-    final historyDir = Directory('${docsDir.path}/history');
+    final historyDir = await _historyDir();
     if (!await historyDir.exists()) {
       await historyDir.create(recursive: true);
     }
@@ -78,10 +138,9 @@ class HistoryService {
       await src.copy(destPath);
       permanentPaths.add(destPath);
 
-      // Only delete the source if it's one of our own temp files (a
-      // Gemini-generated clip). NEVER delete a file the user picked
-      // themselves — that could be their only copy of a real screen
-      // recording or photo living outside the app entirely.
+      // Only delete the source if it's one of our own temp files. NEVER
+      // delete a file the user picked themselves — that could be their
+      // only copy of a real screen recording or photo.
       if (src.path.startsWith(tempDir.path)) {
         try {
           await src.delete();
@@ -114,14 +173,14 @@ class HistoryService {
   /// so the trash flow can be tested without spending credits. Only
   /// called from a button that exists in debug builds.
   Future<void> addDebugTestEntries({int count = 3}) async {
-    final docsDir = await getApplicationDocumentsDirectory();
+    final dir = await _historyDir();
     final entries = await loadHistory();
     final now = DateTime.now();
     for (var i = 0; i < count; i++) {
       final id = 'test_${now.millisecondsSinceEpoch}_$i';
       entries.add(HistoryEntry(
         id: id,
-        clipPaths: ['${docsDir.path}/history/${id}_0.mp4'],
+        clipPaths: ['${dir.path}/${id}_0.mp4'],
         scriptPrompt:
             '[TEST] Fake video ${i + 1} — for trash testing, will not play',
         createdAt: now.subtract(Duration(minutes: i)),
@@ -144,7 +203,19 @@ class HistoryService {
       final items = list
           .map((e) => TrashedEntry.fromJson(e as Map<String, dynamic>))
           .toList();
+
+      final dir = await _historyDir();
+      var anyChanged = false;
+      for (var i = 0; i < items.length; i++) {
+        final (fixed, changed) = await _repair(items[i].entry, dir);
+        if (changed) {
+          items[i] = TrashedEntry(entry: fixed, deletedAt: items[i].deletedAt);
+          anyChanged = true;
+        }
+      }
+
       items.sort((a, b) => b.deletedAt.compareTo(a.deletedAt));
+      if (anyChanged) await _saveTrash(items);
       return items;
     } catch (_) {
       return [];
@@ -214,11 +285,14 @@ class HistoryService {
   }
 
   Future<void> _deleteFiles(List<String> paths) async {
+    final dir = await _historyDir();
     for (final path in paths) {
-      try {
-        final f = File(path);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
+      for (final p in [path, '${dir.path}/${_baseName(path)}']) {
+        try {
+          final f = File(p);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
     }
   }
 }

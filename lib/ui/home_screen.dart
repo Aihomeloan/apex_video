@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/caption_cue.dart';
 import '../services/ffmpeg_service.dart';
+import '../services/photo_save_service.dart';
 import '../state/project_state.dart';
 import 'credits_screen.dart';
 import 'fullscreen_video_viewer.dart';
@@ -29,6 +30,8 @@ class _HomeScreenState extends State<HomeScreen> {
   /// otherwise both play at once and you hear the voice twice.
   bool _fullscreenOpen = false;
 
+  bool _savingToPhotos = false;
+
   @override
   void dispose() {
     _scriptController.dispose();
@@ -46,24 +49,32 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _openFullscreen(BuildContext context, List<String> paths) async {
+  Future<void> _openFullscreen(
+      BuildContext context, ProjectState state, List<String> paths) async {
     if (_fullscreenOpen) return;
     setState(() => _fullscreenOpen = true);
-    await Navigator.of(context).push(
+    final result = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => FullscreenVideoViewer(filePaths: paths),
+        builder: (_) => FullscreenVideoViewer(
+          filePaths: paths,
+          shareText: state.scriptPrompt,
+        ),
       ),
     );
-    if (mounted) setState(() => _fullscreenOpen = false);
+    if (!mounted) return;
+    setState(() => _fullscreenOpen = false);
+    if (result == kFullscreenResultNew) {
+      await _startNewVideo(state, confirm: false);
+    }
   }
 
-  void _handleVerticalDragEnd(
-      BuildContext context, DragEndDetails details, List<String> paths) {
+  void _handleVerticalDragEnd(BuildContext context, ProjectState state,
+      DragEndDetails details, List<String> paths) {
     final double velocity = details.primaryVelocity ?? 0.0;
     final bool isSwipeUp = velocity < -200.0;
     if (isSwipeUp) {
-      _openFullscreen(context, paths);
+      _openFullscreen(context, state, paths);
     }
   }
 
@@ -83,6 +94,75 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _saveCurrentToPhotos(ProjectState state) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _savingToPhotos = true);
+    String? err;
+    for (final p in state.generatedClipPaths) {
+      err = await PhotoSaveService.saveVideo(p);
+      if (err != null) break;
+    }
+    if (!mounted) return;
+    setState(() => _savingToPhotos = false);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(content: Text(err ?? 'Saved to Photos.')));
+  }
+
+  /// Clears the scene, image, dialogue and current video so the user can
+  /// start the next one. The finished video is already in History.
+  Future<void> _startNewVideo(ProjectState state, {bool confirm = true}) async {
+    if (state.isGenerating) return;
+    if (confirm) {
+      final hasVideo = state.generatedClipPaths.isNotEmpty;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Start a new video?'),
+          content: Text(
+            hasVideo
+                ? 'Your current video is already saved in History. This '
+                    'clears the scene, image, and dialogue so you can start fresh.'
+                : 'This clears the scene, image, and dialogue so you can '
+                    'start fresh.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Start new'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    await state.deleteVideoAndScript();
+    if (mounted) {
+      setState(() => _scriptController.clear());
+    }
+  }
+
+  void _onMenuSelected(String value, ProjectState state) {
+    switch (value) {
+      case 'new':
+        _startNewVideo(state);
+        break;
+      case 'history':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const HistoryScreen()),
+        );
+        break;
+      case 'credits':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CreditsScreen()),
+        );
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<ProjectState>();
@@ -92,13 +172,14 @@ class _HomeScreenState extends State<HomeScreen> {
       _controllerInitialized = true;
     }
 
-    final hasContentToDelete = state.generatedClipPaths.isNotEmpty ||
+    final hasContentToClear = state.generatedClipPaths.isNotEmpty ||
         state.scriptPrompt.isNotEmpty ||
         state.sceneImage != null ||
         state.dialogueLines.isNotEmpty;
     final creditsNeeded = state.creditsNeeded;
     final locked = state.isGenerating;
     final assistDisabled = state.isAssisting || state.isGenerating;
+    final hasVideo = state.generatedClipPaths.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -119,12 +200,37 @@ class _HomeScreenState extends State<HomeScreen> {
             label: Text('${state.credits}',
                 style: const TextStyle(color: Colors.amber)),
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Clear everything',
-            onPressed: hasContentToDelete
-                ? () => _confirmDelete(context, state)
-                : null,
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_horiz),
+            tooltip: 'More',
+            onSelected: (v) => _onMenuSelected(v, state),
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'new',
+                enabled: hasContentToClear && !locked,
+                child: const ListTile(
+                  leading: Icon(Icons.add_circle_outline),
+                  title: Text('New video'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'history',
+                child: ListTile(
+                  leading: Icon(Icons.history),
+                  title: Text('History'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'credits',
+                child: ListTile(
+                  leading: Icon(Icons.bolt),
+                  title: Text('Buy credits'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -141,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: SizedBox(
                       height: 240,
                       width: double.infinity,
-                      child: state.generatedClipPaths.isEmpty
+                      child: !hasVideo
                           ? _emptyPreview()
                           : (_fullscreenOpen
                               ? _playingFullscreenPlaceholder()
@@ -149,11 +255,12 @@ class _HomeScreenState extends State<HomeScreen> {
                                   children: [
                                     Positioned.fill(
                                       child: GestureDetector(
-                                        onTap: () => _openFullscreen(
-                                            context, state.generatedClipPaths),
+                                        onTap: () => _openFullscreen(context,
+                                            state, state.generatedClipPaths),
                                         onVerticalDragEnd: (details) =>
                                             _handleVerticalDragEnd(
                                                 context,
+                                                state,
                                                 details,
                                                 state.generatedClipPaths),
                                         child: Center(
@@ -205,6 +312,57 @@ class _HomeScreenState extends State<HomeScreen> {
                                 )),
                     ),
                   ),
+
+                  // After a video is made: save it, or move on to the next.
+                  if (hasVideo)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  icon: _savingToPhotos
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.download, size: 18),
+                                  label: const Text('Save to Photos'),
+                                  onPressed: _savingToPhotos
+                                      ? null
+                                      : () => _saveCurrentToPhotos(state),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                  ),
+                                  icon: const Icon(Icons.add, size: 18),
+                                  label: const Text('New video'),
+                                  onPressed: locked
+                                      ? null
+                                      : () => _startNewVideo(state),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'This video is saved in History automatically.',
+                            style:
+                                TextStyle(fontSize: 11, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+
                   _bottomPanel(context, state, creditsNeeded, locked,
                       assistDisabled),
                 ],
@@ -603,37 +761,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     state.generate();
   }
-
-  Future<void> _confirmDelete(BuildContext context, ProjectState state) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Clear everything?'),
-        content: const Text(
-          'This clears the image, dialogue, and the video currently shown '
-          'above. Videos already saved to History are not affected.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      await state.deleteVideoAndScript();
-      if (mounted) {
-        setState(() => _scriptController.clear());
-      }
-    }
-  }
 }
 
 class _GeneratingLabel extends StatefulWidget {
@@ -905,13 +1032,9 @@ class _ExportSectionState extends State<_ExportSection> {
   Widget build(BuildContext context) {
     final state = context.watch<ProjectState>();
 
-    if (!Platform.isMacOS) {
-      return const Text(
-        'Exporting with captions burned in only works on the macOS build — '
-        'use Share above (Save to Files / AirDrop) for now on iPhone.',
-        style: TextStyle(fontSize: 11, color: Colors.grey),
-      );
-    }
+    // iPhone: Save to Photos / Share are right under the video, so no
+    // extra note is needed here. The caption export is Mac-only.
+    if (!Platform.isMacOS) return const SizedBox.shrink();
 
     return Row(
       children: [
