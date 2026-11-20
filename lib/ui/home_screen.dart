@@ -24,6 +24,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final _scriptController = TextEditingController();
   bool _controllerInitialized = false;
 
+  /// True while the full-screen player is open. The small preview is
+  /// removed during that time so only ONE player is ever playing —
+  /// otherwise both play at once and you hear the voice twice.
+  bool _fullscreenOpen = false;
+
   @override
   void dispose() {
     _scriptController.dispose();
@@ -41,13 +46,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _openFullscreen(BuildContext context, List<String> paths) {
-    Navigator.of(context).push(
+  Future<void> _openFullscreen(BuildContext context, List<String> paths) async {
+    if (_fullscreenOpen) return;
+    setState(() => _fullscreenOpen = true);
+    await Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (_) => FullscreenVideoViewer(filePaths: paths),
       ),
     );
+    if (mounted) setState(() => _fullscreenOpen = false);
   }
 
   void _handleVerticalDragEnd(
@@ -57,6 +65,22 @@ class _HomeScreenState extends State<HomeScreen> {
     if (isSwipeUp) {
       _openFullscreen(context, paths);
     }
+  }
+
+  /// [buttonContext] is the Share button's own context, so iPad knows
+  /// where to anchor the share popover (without it, iPad can crash).
+  Future<void> _shareCurrent(
+      BuildContext buttonContext, ProjectState state) async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = (box != null && box.hasSize)
+        ? box.localToGlobal(Offset.zero) & box.size
+        : null;
+    final files = state.generatedClipPaths.map((p) => XFile(p)).toList();
+    await Share.shareXFiles(
+      files,
+      text: state.scriptPrompt,
+      sharePositionOrigin: origin,
+    );
   }
 
   @override
@@ -117,62 +141,68 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: SizedBox(
                       height: 240,
                       width: double.infinity,
-                      child: state.generatedClipPaths.isNotEmpty
-                          ? Stack(
-                              children: [
-                                Positioned.fill(
-                                  child: GestureDetector(
-                                    onTap: () => _openFullscreen(
-                                        context, state.generatedClipPaths),
-                                    onVerticalDragEnd: (details) =>
-                                        _handleVerticalDragEnd(context,
-                                            details, state.generatedClipPaths),
-                                    child: Center(
-                                      child: SequentialVideoPlayer(
-                                        key: ValueKey(state.generatedClipPaths
-                                            .join(',')),
-                                        filePaths: state.generatedClipPaths,
+                      child: state.generatedClipPaths.isEmpty
+                          ? _emptyPreview()
+                          : (_fullscreenOpen
+                              ? _playingFullscreenPlaceholder()
+                              : Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: GestureDetector(
+                                        onTap: () => _openFullscreen(
+                                            context, state.generatedClipPaths),
+                                        onVerticalDragEnd: (details) =>
+                                            _handleVerticalDragEnd(
+                                                context,
+                                                details,
+                                                state.generatedClipPaths),
+                                        child: Center(
+                                          child: SequentialVideoPlayer(
+                                            key: ValueKey(state
+                                                .generatedClipPaths
+                                                .join(',')),
+                                            filePaths: state.generatedClipPaths,
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ),
-                                const Positioned(
-                                  bottom: 6,
-                                  left: 0,
-                                  right: 0,
-                                  child: Center(
-                                    child: Text(
-                                      'Swipe up for full screen',
-                                      style: TextStyle(
-                                          fontSize: 10, color: Colors.grey),
+                                    const Positioned(
+                                      bottom: 6,
+                                      left: 0,
+                                      right: 0,
+                                      child: Center(
+                                        child: Text(
+                                          'Tap or swipe up for full screen',
+                                          style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.grey),
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
-                                Positioned(
-                                  top: 8,
-                                  right: 8,
-                                  child: IconButton.filled(
-                                    style: IconButton.styleFrom(
-                                      backgroundColor: Colors.amber,
-                                      foregroundColor: Colors.black,
-                                      side: const BorderSide(
-                                          color: Colors.white, width: 1.5),
-                                      padding: const EdgeInsets.all(10),
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Builder(
+                                        builder: (btnContext) =>
+                                            IconButton.filled(
+                                          style: IconButton.styleFrom(
+                                            backgroundColor: Colors.amber,
+                                            foregroundColor: Colors.black,
+                                            side: const BorderSide(
+                                                color: Colors.white,
+                                                width: 1.5),
+                                            padding: const EdgeInsets.all(10),
+                                          ),
+                                          icon: const Icon(Icons.ios_share,
+                                              size: 24),
+                                          tooltip: 'Share',
+                                          onPressed: () =>
+                                              _shareCurrent(btnContext, state),
+                                        ),
+                                      ),
                                     ),
-                                    icon: const Icon(Icons.ios_share, size: 24),
-                                    tooltip: 'Share',
-                                    onPressed: () async {
-                                      final files = state.generatedClipPaths
-                                          .map((p) => XFile(p))
-                                          .toList();
-                                      await Share.shareXFiles(files,
-                                          text: state.scriptPrompt);
-                                    },
-                                  ),
-                                ),
-                              ],
-                            )
-                          : _emptyPreview(),
+                                  ],
+                                )),
                     ),
                   ),
                   _bottomPanel(context, state, creditsNeeded, locked,
@@ -184,6 +214,18 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _playingFullscreenPlaceholder() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.black,
+      ),
+      alignment: Alignment.center,
+      child: const Text('Playing full screen…',
+          style: TextStyle(color: Colors.grey)),
     );
   }
 
@@ -410,7 +452,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
 
               const SizedBox(height: 8),
-              _sectionLabel('3. Length'),
+              _sectionLabel('3. Length & quality'),
               const SizedBox(height: 6),
               Wrap(
                 spacing: 8,
@@ -423,6 +465,31 @@ class _HomeScreenState extends State<HomeScreen> {
                         locked ? null : (_) => state.setVideoDuration(seconds),
                   );
                 }).toList(),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: Text(
+                        'Standard · ${state.costFor(ProjectState.qualityStandard, state.videoDurationSeconds)} credits'),
+                    selected:
+                        state.videoQuality == ProjectState.qualityStandard,
+                    onSelected: locked
+                        ? null
+                        : (_) =>
+                            state.setVideoQuality(ProjectState.qualityStandard),
+                  ),
+                  ChoiceChip(
+                    label: Text(
+                        'HD 2K · ${state.costFor(ProjectState.qualityHd, state.videoDurationSeconds)} credits'),
+                    selected: state.videoQuality == ProjectState.qualityHd,
+                    onSelected: locked
+                        ? null
+                        : (_) => state.setVideoQuality(ProjectState.qualityHd),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 8),

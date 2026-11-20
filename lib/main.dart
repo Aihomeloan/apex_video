@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'config/env.dart';
 import 'state/project_state.dart';
+import 'ui/consent_gate.dart';
 import 'ui/splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Env.load();
   runApp(const ApexVideoApp());
 }
 
@@ -44,7 +43,8 @@ class ApexVideoApp extends StatelessWidget {
             ),
           ),
         ),
-        home: const SplashScreen(),
+        // One-time AI consent first, then the normal splash → home.
+        home: const ConsentGate(child: SplashScreen()),
       ),
     );
   }

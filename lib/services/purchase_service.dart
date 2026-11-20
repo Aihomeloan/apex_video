@@ -1,7 +1,22 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+/// What happened when we asked the server to verify a purchase.
+enum VerifyOutcome {
+  /// Credits added.
+  credited,
+
+  /// Already added earlier — nothing more to do.
+  alreadyDone,
+
+  /// Couldn't confirm right now (network etc.). Leave the purchase open so
+  /// Apple hands it to us again on the next app launch.
+  retryLater,
+
+  /// Permanently unusable — finish it so it stops coming back.
+  rejected,
+}
 
 /// Consumable credit packs. These exact IDs must exist in App Store
 /// Connect (and Play Console, if you ship Android) as Consumable
@@ -18,10 +33,6 @@ class PurchaseService {
     credits36: 36,
     credits72: 72,
   };
-
-  /// Purchase IDs we've already paid out, so a replayed transaction
-  /// never grants the same credits twice.
-  static const _grantedKey = 'apexvideo_granted_purchase_ids';
 
   final InAppPurchase _iap = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _subscription;
@@ -43,10 +54,11 @@ class PurchaseService {
     return products;
   }
 
-  /// Call once, early (e.g. app startup). [onCreditsGranted] fires once
-  /// per completed purchase; [onError] fires on failure.
+  /// Call once, early (app startup). [onVerify] asks our server to check
+  /// the purchase with Apple and add the credits; the purchase is only
+  /// finished with Apple once that succeeds (or can never succeed).
   void listenForPurchases({
-    required void Function(int credits) onCreditsGranted,
+    required Future<VerifyOutcome> Function(PurchaseDetails purchase) onVerify,
     required void Function(String message) onError,
   }) {
     _subscription?.cancel();
@@ -54,20 +66,16 @@ class PurchaseService {
       for (final purchase in purchases) {
         if (purchase.status == PurchaseStatus.pending) continue;
 
+        var finish = true;
         if (purchase.status == PurchaseStatus.error) {
           onError(purchase.error?.message ?? 'Purchase failed.');
-        } else if (purchase.status == PurchaseStatus.purchased ||
-            purchase.status == PurchaseStatus.restored) {
-          final credits = creditsByProduct[purchase.productID] ?? 0;
-          if (credits > 0 && await _markGrantedIfNew(purchase)) {
-            onCreditsGranted(credits);
-          }
+        } else if (purchase.status == PurchaseStatus.purchased) {
+          final outcome = await onVerify(purchase);
+          if (outcome == VerifyOutcome.retryLater) finish = false;
         }
-        // PurchaseStatus.canceled: the user backed out — nothing to do.
+        // restored / canceled: consumables don't restore — nothing to add.
 
-        // Required on iOS — an uncompleted transaction stays pending
-        // forever and the user can be charged without ever "finishing."
-        if (purchase.pendingCompletePurchase) {
+        if (finish && purchase.pendingCompletePurchase) {
           await _iap.completePurchase(purchase);
         }
 
@@ -77,27 +85,6 @@ class PurchaseService {
       buying.value = null;
       onError(e.toString());
     });
-  }
-
-  /// Records this purchase as paid out. Returns false if it already was.
-  Future<bool> _markGrantedIfNew(PurchaseDetails p) async {
-    final id = p.purchaseID ??
-        (p.transactionDate != null
-            ? '${p.productID}_${p.transactionDate}'
-            : null);
-    // No stable ID to check against — grant rather than risk shorting
-    // someone who paid.
-    if (id == null) return true;
-
-    final prefs = await SharedPreferences.getInstance();
-    final granted = prefs.getStringList(_grantedKey) ?? <String>[];
-    if (granted.contains(id)) return false;
-    granted.add(id);
-    if (granted.length > 500) {
-      granted.removeRange(0, granted.length - 500);
-    }
-    await prefs.setStringList(_grantedKey, granted);
-    return true;
   }
 
   Future<void> buy(ProductDetails product) async {
