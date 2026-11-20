@@ -368,10 +368,16 @@ class ProjectState extends ChangeNotifier {
       buffer.write(scriptPrompt.trim());
       buffer.write(' ');
     }
-    for (final d in dialogueLines) {
-      if (d.line.trim().isEmpty) continue;
-      final speaker = d.speaker.trim().isEmpty ? 'A character' : d.speaker.trim();
-      buffer.write('$speaker says: "${d.line.trim()}". ');
+    final lines =
+        dialogueLines.where((d) => d.line.trim().isNotEmpty).toList();
+    if (lines.isNotEmpty) {
+      buffer.write('Dialogue, in order. Speak only the words inside the '
+          'quotes; never say the speaker labels: ');
+      for (final d in lines) {
+        final speaker =
+            d.speaker.trim().isEmpty ? 'Speaker' : d.speaker.trim();
+        buffer.write('[$speaker] "${d.line.trim()}" ');
+      }
     }
     return buffer.toString().trim();
   }
