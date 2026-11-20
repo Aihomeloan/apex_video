@@ -9,6 +9,8 @@ import '../services/ffmpeg_service.dart';
 import '../services/photo_save_service.dart';
 import '../state/project_state.dart';
 import 'credits_screen.dart';
+import 'content_rules.dart';
+import 'legal_screen.dart';
 import 'fullscreen_video_viewer.dart';
 import 'gold_shimmer_border.dart';
 import 'history_screen.dart';
@@ -155,6 +157,14 @@ class _HomeScreenState extends State<HomeScreen> {
           MaterialPageRoute(builder: (_) => const HistoryScreen()),
         );
         break;
+      case 'legal':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const LegalScreen()),
+        );
+        break;
+      case 'rules':
+        showContentRules(context);
+        break;
       case 'credits':
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const CreditsScreen()),
@@ -219,6 +229,22 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ListTile(
                   leading: Icon(Icons.history),
                   title: Text('History'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'legal',
+                child: ListTile(
+                  leading: Icon(Icons.policy_outlined),
+                  title: Text('Privacy & Terms'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'rules',
+                child: ListTile(
+                  leading: Icon(Icons.shield_outlined),
+                  title: Text('Content rules'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -697,6 +723,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     style: TextStyle(fontSize: 11, color: Colors.grey),
                   ),
                 ),
+
+              Center(
+                child: TextButton.icon(
+                  icon: const Icon(Icons.shield_outlined, size: 14),
+                  label: const Text('Content rules',
+                      style: TextStyle(fontSize: 12)),
+                  onPressed: () => showContentRules(context),
+                ),
+              ),
 
               if (state.canCombineWithPrevious) ...[
                 const SizedBox(height: 10),

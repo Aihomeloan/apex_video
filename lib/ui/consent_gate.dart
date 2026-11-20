@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'content_rules.dart';
 
 /// One-time AI data disclosure + consent (App Store guideline 5.1.2).
 /// Names every outside AI provider and what is sent to each, and asks for
@@ -126,13 +127,21 @@ class _ConsentGateState extends State<ConsentGate> {
               'or images. Your finished videos are saved only on your device.',
               style: TextStyle(fontSize: 13, color: Colors.grey, height: 1.4),
             ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                style: TextButton.styleFrom(padding: EdgeInsets.zero),
-                onPressed: _openPrivacy,
-                child: const Text('Read the Privacy Policy'),
-              ),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 16,
+              children: [
+                TextButton(
+                  style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                  onPressed: () => showContentRules(context),
+                  child: const Text('What you can\'t create'),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                  onPressed: _openPrivacy,
+                  child: const Text('Privacy Policy'),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             CheckboxListTile(
@@ -144,7 +153,7 @@ class _ConsentGateState extends State<ConsentGate> {
               contentPadding: EdgeInsets.zero,
               title: const Text(
                 'I understand and agree to send this content to Google and '
-                'MiniMax to create my videos.',
+                'MiniMax to create my videos, and to follow the content rules.',
                 style: TextStyle(fontSize: 13),
               ),
             ),
